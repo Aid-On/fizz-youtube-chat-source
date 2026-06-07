@@ -1,0 +1,3 @@
+# almide.lock — auto-generated, do not edit
+
+fizz_protocol = { git = "https://github.com/Aid-On/fizz-protocol", ref = "v0.2.0", commit = "5a85c6eb77336ed3ccab6be27c3368899b7d9961" }
