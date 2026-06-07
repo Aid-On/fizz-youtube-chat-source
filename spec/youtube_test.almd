@@ -1,0 +1,74 @@
+import self as yt
+import fizz_protocol.comment
+
+test "bootstrap finds active live chat id" {
+  let body = r"""
+    {"items": [{"liveStreamingDetails": {"activeLiveChatId": "Cg0KC2FiYw"}}]}
+  """
+  assert_eq(yt.parse_bootstrap(body), yt.LiveChatFound("Cg0KC2FiYw"))
+}
+
+test "bootstrap before live returns NotLiveYet" {
+  assert_eq(yt.parse_bootstrap("{\"items\": []}"), yt.NotLiveYet)
+  assert_eq(yt.parse_bootstrap("{\"items\": [{\"liveStreamingDetails\": {}}]}"), yt.NotLiveYet)
+}
+
+test "poll page normalizes text messages and skips non-text events" {
+  let body = r"""
+    {
+      "nextPageToken": "tok-2",
+      "pollingIntervalMillis": 7000,
+      "items": [
+        {"id": "m1", "snippet": {"type": "textMessageEvent", "displayMessage": "こんにちは"},
+         "authorDetails": {"displayName": "viewer1"}},
+        {"id": "m2", "snippet": {"type": "superChatEvent", "displayMessage": "1000円"},
+         "authorDetails": {"displayName": "rich"}},
+        {"id": "m3", "snippet": {"type": "textMessageEvent", "displayMessage": ""},
+         "authorDetails": {"displayName": "silent"}}
+      ]
+    }
+  """
+  match yt.parse_poll(body) {
+    yt.Page(page) => {
+      assert_eq(list.len(page.comments), 1)
+      let c = list.first(page.comments) ?? comment.Comment { id: "", user: "", text: "", color: none, source: comment.Youtube }
+      assert_eq(c.id, "yt-m1")
+      assert_eq(c.user, "viewer1")
+      assert_eq(c.text, "こんにちは")
+      assert_eq(c.source, comment.Youtube)
+      assert_eq(page.next_page_token, some("tok-2"))
+      assert_eq(page.poll_after_ms, 7000)
+    },
+    _ => assert(false),
+  }
+}
+
+test "polling interval is clamped to the 5s floor" {
+  let body = "{\"items\": [], \"pollingIntervalMillis\": 1000}"
+  match yt.parse_poll(body) {
+    yt.Page(page) => assert_eq(page.poll_after_ms, 5000),
+    _ => assert(false),
+  }
+}
+
+test "quota exhaustion is classified" {
+  let body = r"""
+    {"error": {"code": 403, "message": "quota", "errors": [{"reason": "quotaExceeded"}]}}
+  """
+  assert_eq(yt.parse_poll(body), yt.QuotaExceeded)
+}
+
+test "chat end is classified" {
+  let ended = r"""
+    {"error": {"code": 403, "errors": [{"reason": "liveChatEnded"}]}}
+  """
+  assert_eq(yt.parse_poll(ended), yt.ChatEnded)
+  let gone = "{\"error\": {\"code\": 404, \"errors\": []}}"
+  assert_eq(yt.parse_poll(gone), yt.ChatEnded)
+}
+
+test "page token carries into the next poll url" {
+  let url = yt.messages_url("KEY", "CHAT", some("tok"))
+  assert(string.contains(url, "pageToken=tok"))
+  assert(not string.contains(yt.messages_url("KEY", "CHAT", none), "pageToken"))
+}

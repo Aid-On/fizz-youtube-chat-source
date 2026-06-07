@@ -1,0 +1,91 @@
+// CLI エントリポイント — 正規化コメントを NDJSON で stdout へ流す。
+// ログ・診断はすべて stderr (stdout はデータ専用)。
+//
+//   YOUTUBE_API_KEY=... YOUTUBE_VIDEO_ID=... fizz-youtube-chat-source \
+//     | fizz-comment-dedupe | ...
+
+import self as yt
+import fizz_protocol.comment
+import http
+import env
+import process
+
+effect fn main() -> Unit = {
+  let api_key = string.trim(env.get("YOUTUBE_API_KEY") ?? "")
+  let video_id = string.trim(env.get("YOUTUBE_VIDEO_ID") ?? "")
+  guard api_key != "" and video_id != "" else {
+    eprintln("[youtube] missing env: YOUTUBE_API_KEY / YOUTUBE_VIDEO_ID")
+    process.exit(1)
+  }
+  run(api_key, video_id)
+}
+
+effect fn run(api_key: String, video_id: String) -> Unit = {
+  var live_chat_id: Option[String] = none
+  var page_token: Option[String] = none
+  // 初回ページは履歴 — 流さずに捨て、以降のページだけ emit する。
+  var primed = false
+  while true {
+    match live_chat_id {
+      none => {
+        match http.get(yt.videos_url(api_key, video_id)) {
+          err(e) => {
+            eprintln("[youtube] bootstrap http error: ${e}")
+            env.sleep_ms(yt.TRANSIENT_RETRY_MS)
+          },
+          ok(body) => match yt.parse_bootstrap(body) {
+            yt.LiveChatFound(id) => {
+              eprintln("[youtube] open — liveChatId=${id} videoId=${video_id}")
+              live_chat_id = some(id)
+              page_token = none
+              primed = false
+            },
+            yt.NotLiveYet => {
+              eprintln("[youtube] no activeLiveChatId (not live yet / ended); retrying in 60s")
+              env.sleep_ms(yt.BOOTSTRAP_RETRY_MS)
+            },
+            yt.BootstrapError(e) => {
+              eprintln("[youtube] bootstrap error: ${e}")
+              env.sleep_ms(yt.TRANSIENT_RETRY_MS)
+            },
+          },
+        }
+      },
+      some(chat_id) => {
+        match http.get(yt.messages_url(api_key, chat_id, page_token)) {
+          err(e) => {
+            eprintln("[youtube] poll http error: ${e}")
+            env.sleep_ms(yt.TRANSIENT_RETRY_MS)
+          },
+          ok(body) => match yt.parse_poll(body) {
+            yt.Page(page) => {
+              page_token = page.next_page_token
+              if primed then {
+                for c in page.comments {
+                  println(comment.comment_to_json(c))
+                }
+              } else {
+                primed = true
+                eprintln("[youtube] primed (skipped ${int.to_string(list.len(page.comments))} historical messages)")
+              }
+              env.sleep_ms(page.poll_after_ms)
+            },
+            yt.QuotaExceeded => {
+              eprintln("[youtube] quotaExceeded; backing off 5min")
+              env.sleep_ms(yt.QUOTA_BACKOFF_MS)
+            },
+            yt.ChatEnded => {
+              eprintln("[youtube] chat ended/closed; waiting for the video to go live again")
+              live_chat_id = none
+              env.sleep_ms(yt.BOOTSTRAP_RETRY_MS)
+            },
+            yt.PollError(e) => {
+              eprintln("[youtube] ${e}")
+              env.sleep_ms(yt.TRANSIENT_RETRY_MS)
+            },
+          },
+        }
+      },
+    }
+  }
+}

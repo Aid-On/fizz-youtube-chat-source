@@ -1,0 +1,7 @@
+[package]
+name = "fizz_youtube_chat_source"
+version = "0.1.0"
+description = "Fizz comment source — YouTube Live Chat (Data API v3, read-only polling) → normalized Comment NDJSON"
+
+[dependencies]
+fizz_protocol = { git = "https://github.com/Aid-On/fizz-protocol", tag = "v0.1.1" }
