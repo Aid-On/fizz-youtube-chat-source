@@ -36,3 +36,7 @@ jobs:
         run: almide check src/main.almd
       - name: Run tests
         run: almide test
+      - name: Build CLI binary
+        run: |
+          mkdir -p build
+          almide build src/main.almd -o build/out
